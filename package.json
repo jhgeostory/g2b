@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "scrape:local": "tsx scripts/scrape.ts"
+    "scrape:local": "tsx scripts/scrape.ts",
+    "debug:html": "tsx scripts/debug_html.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",

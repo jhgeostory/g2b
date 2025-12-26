@@ -31,357 +31,519 @@ interface Announcement {
 const TARGET_AGENCY_CODE = '1613436'; // 국토교통부 국토지리정보원
 const G2B_URL = 'https://www.g2b.go.kr/';
 
+// Helper to close common G2B popups
+async function closeMainPopups(page: any) {
+    console.log('Attempting to close visible popups...');
+    try {
+        const frames = page.frames();
+        for (const frame of frames) {
+            const closeBtns = await frame.$$('a, button, div, span, img');
+            for (const btn of closeBtns) {
+                const text = await frame.evaluate((el: any) => el.textContent?.trim(), btn);
+                const alt = await frame.evaluate((el: any) => el.getAttribute('alt'), btn);
+                const className = await frame.evaluate((el: any) => el.className, btn);
+
+                if (
+                    text === '닫기' || text === '창닫기' || text?.includes('오늘 하루 열지') ||
+                    alt === '닫기' || alt === '창닫기' ||
+                    (className && typeof className === 'string' && className.includes('close'))
+                ) {
+                    try {
+                        if (await frame.evaluate((el: any) => el.offsetParent !== null, btn)) {
+                            console.log(`Closing popup in frame "${frame.name()}": ${text || alt || 'Icon'}`);
+                            await frame.evaluate((el: any) => el.click(), btn);
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                    } catch (e) { }
+                }
+            }
+        }
+    } catch (e) {
+        console.log('Error closing popups:', e);
+    }
+};
+
 async function scrapeG2B(): Promise<Announcement[]> {
     console.log('Starting scraper...');
     const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'], // Required for GitHub Actions
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-popup-blocking'], // Added popup blocking disable
     });
-    const page = await browser.newPage();
+    let page = await browser.newPage();
+
+    // ... (lines skipped)
 
     try {
         // 1. Go to G2B
         await page.goto(G2B_URL, { waitUntil: 'networkidle0' });
         console.log('Navigated to G2B homepage.');
 
-        // 2. Click "발주목록" -> Depending on UI, might need to navigate via frame or direct link
-        // The previous research showed we can find it by text.
-        // However, G2B allows direct URL parameters sometimes, but usually it's stateful.
-        // Let's use the UI interaction flow discovered.
+        // Close initial popups
+        await closeMainPopups(page);
 
-        // Find '발주목록' in the menu or sitemap.
-        // Research result: Click "발주" menu then "발주목록".
-        // Or we can try to execute JS to find the link.
+        // 2. Navigate to "입찰정보" -> "공고현황" (Public Bid Announcements)
+        console.log('Attempting navigation: 입찰정보 -> 공고현황');
 
-        // Wait for the main frame/content
-        const frame = page.mainFrame();
+        let menuClicked = false;
 
-        // Attempt to locate the "발주" menu.
-        // NOTE: G2B is framed. We might need to handle frames.
-        // But the research said "URL does not change", implying SPA or Frames.
-        // Research said "single-page application (SPA) architecture or POST requests".
+        // Find "입찰정보" (Bid Info) menu item
+        const frames = page.frames();
+        for (const frame of frames) {
+            const menuHandle = await frame.evaluateHandle(() => {
+                const result = Array.from(document.querySelectorAll('a, button, span, li'));
+                return result.find(el => el.textContent?.trim() === '입찰정보');
+            });
 
-        // Let's rely on the specific ID navigation if possible, but IDs are dynamic?
-        // Research: "Detailed Search Toggle: id='wq_uuid_2652_btnSearchToggle'" -> UUID suggests dynamic.
-        // So we must use robust selectors (text-based or class-based).
-
-        // Navigate to Order List Page
-        // Try to click "발주" -> "발주목록" using text
-        // 2. Navigation Sequence: "발주" -> "발주목록"
-        console.log('Attempting navigation: 발주 -> 발주목록');
-
-        // Step A: Click "발주" (Top Menu)
-        const topMenus = await page.$$('li, a, span');
-        let orderMenu;
-        for (const menu of topMenus) {
-            // Strict check: specifically "발주"
-            const text = await page.evaluate(el => el.textContent?.trim(), menu);
-            if (text === '발주') {
-                orderMenu = menu;
+            if (menuHandle.asElement()) {
+                console.log('Found "입찰정보" menu. Clicking...');
+                await menuHandle.asElement()!.evaluate((el: any) => el.click());
+                menuClicked = true;
+                await new Promise(r => setTimeout(r, 2000)); // Wait for submenu/frame load
                 break;
             }
         }
 
-        if (orderMenu) {
-            console.log('Found "발주" menu. Clicking...');
-            await page.evaluate(el => el.click(), orderMenu);
-            await new Promise(r => setTimeout(r, 1000)); // Wait for submenu
-        } else {
-            console.warn('Could not find specific "발주" menu. Trying direct "발주목록" search...');
+        if (!menuClicked) {
+            console.warn('Could not find "입찰정보" menu. Proceeding anyway...');
         }
 
-        // Step B: Click "발주목록"
-        const subMenus = await page.$$('li, a, span');
-        let orderListBtn;
-        for (const menu of subMenus) {
-            const text = await page.evaluate(el => el.textContent?.trim(), menu);
-            if (text === '발주목록') {
-                orderListBtn = menu;
-                break;
-            }
-        }
-
-        if (orderListBtn) {
-            console.log('Found "발주목록" button. Clicking...');
-            await page.evaluate(el => el.click(), orderListBtn);
-
-            // Wait for navigation confirmation
-            console.log('Waiting for Order List page to load...');
-            let onOrderListPage = false;
-
-            for (let i = 0; i < 15; i++) { // Wait up to 15s
-                await new Promise(r => setTimeout(r, 1000));
-                // Check for list-specific keywords in the entire page (including frames)
-                onOrderListPage = await page.evaluate(() => {
-                    const text = document.body.innerText;
-                    // Keywords found on the Order List / Announcement List page
-                    return text.includes('공고명') || text.includes('공고번호') || text.includes('입찰마감일시');
+        // Find "공고현황" (Announcement List) sub-menu
+        let subMenuClicked = false;
+        for (const frame of page.frames()) {
+            const subMenuHandle = await frame.evaluateHandle(() => {
+                const result = Array.from(document.querySelectorAll('a, button, span, li'));
+                // "공고현황" or "입찰공고검색"
+                return result.find(el => {
+                    const t = el.textContent?.trim();
+                    return t === '공고현황' || t === '물품'; // Clicking "물품" often leads to the list
                 });
+            });
 
-                // Also check frames
-                if (!onOrderListPage) {
-                    for (const frame of page.frames()) {
-                        const frameText = await frame.evaluate(() => document.body.innerText).catch(() => '');
-                        if (frameText.includes('공고명') && frameText.includes('공고번호')) {
-                            onOrderListPage = true;
-                            break;
-                        }
+            if (subMenuHandle.asElement()) {
+                console.log('Found "공고현황/물품" button. Clicking via JS...');
+
+                await new Promise(r => setTimeout(r, 500));
+
+                // For Bid Info, it usually stays in the same tab (iframe update), 
+                // BUT sometimes opens a popup. We'll use the generic wait logic.
+                const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target(), { timeout: 5000 }).catch(() => null);
+
+                await subMenuHandle.asElement()!.evaluate((el: any) => el.click());
+
+                const newTarget = await newTargetPromise;
+                if (newTarget) {
+                    console.log('New tab/window opened. Switching context...');
+                    const newPage = await newTarget.page();
+                    if (newPage) {
+                        page = newPage;
+                        await page.bringToFront();
                     }
                 }
 
-                if (onOrderListPage) {
-                    console.log('Verified arrival on Order List page.');
-                    break;
-                }
+                subMenuClicked = true;
+                break;
             }
+        }
+
+        if (!subMenuClicked) {
+            console.warn('Could not find "공고현황" menu button.');
+        }
+
+        console.log('Waiting for page load (3s)...');
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Strict Verify regarding of tab
+        const pageTitle = await page.title();
+        console.log(`Current Page Title: ${pageTitle}`);
+
+        // Fix: Do not rely on text '발주목록' as it exists in the menu on every page.
+        // Check for specific Inputs meant for the Order List form.
+        let onOrderListPage = false;
+        try {
+            onOrderListPage = await page.evaluate(() => {
+                // Check for 'inqrBgnDt' (Date Input) or 'taskClCd' (Hidden Task Code)
+                return !!document.querySelector('input[id*="inqrBgnDt"]') ||
+                    !!document.querySelector('input[name="taskClCd"]') ||
+                    !!document.querySelector('input[id*="dminInstCd"]');
+            });
+        } catch (e) { }
+
+        if (pageTitle === '나라장터' && !onOrderListPage) {
+            console.error('ERROR: Still on Main Page (Title: 나라장터) and Search Form inputs NOT found.');
+            console.log('Menu navigation failed. Attempting Direct URL for "Bid Announcement Search"...');
+
+            // Fallback: Direct URL to the internal "Bid Announcement" application page
+            // This bypasses the frameset wrapper which often blocks direct access.
+            const DIRECT_URL = 'https://www.g2b.go.kr:8101/ep/tbid/tbidFwd.do?taskClCd=1';
+            await page.goto(DIRECT_URL, { waitUntil: 'networkidle0' });
+            await new Promise(r => setTimeout(r, 4000));
+
+            console.log(`Navigated to Direct URL: ${page.url()}`);
+
+            // Re-verify
+            try {
+                onOrderListPage = await page.evaluate(() => {
+                    return !!document.querySelector('input[id*="inqrBgnDt"]') ||
+                        !!document.querySelector('input[name="taskClCd"]') ||
+                        !!document.querySelector('input[id*="dminInstCd"]');
+                });
+            } catch (e) { }
 
             if (!onOrderListPage) {
-                console.warn('FAILED to verify navigation to Order List page.');
-                // Dump current page text for debug
-                const currentText = await page.evaluate(() => document.body.innerText.substring(0, 500).replace(/\s+/g, ' '));
-                console.log('Current Page Text Dump:', currentText);
-                throw new Error('Navigation failed - stuck on previous page.');
+                const uniqueText = await page.evaluate(() => document.body.innerText.substring(0, 200));
+                console.log(`Page Stub after Direct URL: ${uniqueText}`);
+                throw new Error('Navigation failed: Direct URL also failed to load Search Inputs.');
             }
+        }
 
+        if (onOrderListPage) {
+            console.log('Verified arrival on Order List page (Found Search Inputs).');
         } else {
-            throw new Error('Could not find "발주목록" menu.');
+            const uniqueText = await page.evaluate(() => document.body.innerText.substring(0, 200));
+            console.log(`Page Stub: ${uniqueText}`);
+            throw new Error('Navigation verification failed: Search Inputs not found.');
         }
 
-        // 3. Wait for the content to actually load (SPA/Frame loading)
-        console.log('Waiting for "수요기관" text to appear in any frame...');
+        // Close Popups on New Page if any
+        await closeMainPopups(page);
 
-        try {
-            await page.waitForFunction(() => {
-                // Check main document and all iframes
-                const checkFrames = (win: Window): boolean => {
-                    try {
-                        if (win.document.body.innerText.includes('수요기관')) return true;
-                        for (let i = 0; i < win.frames.length; i++) {
-                            if (checkFrames(win.frames[i])) return true;
-                        }
-                    } catch (e) { /* cross-origin issues ignored */ }
-                    return false;
-                };
-                return checkFrames(window);
-            }, { timeout: 30000 }); // Wait up to 30s
-            console.log('Detected "수요기관" text on page!');
-        } catch (e) {
-            console.warn('Timeout waiting for "수요기관" text - page might not have loaded correctly.');
-        }
+        // 3. Identify Content Frame
+        console.log('Searching for content frame containing "공고명"...');
 
-        // Identify the exact frame
-        console.log('Identifying content frame...');
         let targetFrame = null;
-        const frames = page.frames();
-
-        for (const frame of frames) {
-            try {
-                const hasContent = await frame.evaluate(() => document.body.innerText.includes('수요기관'));
-                if (hasContent) {
-                    targetFrame = frame;
-                    console.log(`Found content frame: "${frame.name()}" (${frame.url()})`);
-                    break;
-                }
-            } catch (e) { }
+        for (let i = 0; i < 10; i++) {
+            const frames = page.frames();
+            for (const f of frames) {
+                try {
+                    const text = await f.evaluate(() => document.body.innerText).catch(() => '');
+                    // Stricter frame check
+                    if (text.includes('공고명') && (text.includes('수요기관') || text.includes('발주기관'))) {
+                        targetFrame = f;
+                        console.log(`Found Content Frame: ${f.name() || 'Unnamed'} (${f.url()})`);
+                        break;
+                    }
+                } catch (e) { }
+            }
+            if (targetFrame) break;
+            await new Promise(r => setTimeout(r, 1000));
         }
 
         if (!targetFrame) {
-            console.warn('Could not pinpoint frame object despite text check. Using main frame.');
-            targetFrame = page.mainFrame();
+            // Fallback to main page if frames not found (sometimes it's not framed)
+            console.log('No specific content frame found. Using Main Page as target.');
+            targetFrame = page;
         }
 
+        // 3b. Dump Search Area HTML for Debugging
+        console.log('--- DEBUG: Dumping "수요기관" Search Area HTML ---');
         // 3. Open Detailed Conditions (상세조건) using targetFrame
-        // Check if "수요기관" label is already visible
-        let isDetailedOpen = await targetFrame.evaluate(() => {
-            const labels = Array.from(document.querySelectorAll('label, th, td'));
-            return labels.some(l => (l as HTMLElement).style.display !== 'none' && l.textContent?.includes('수요기관'));
+        console.log('Checking "Detailed Search" status...');
+
+        // Strict check: Is the Agency Input actually visible?
+        const isDetailedOpen = await targetFrame.evaluate(() => {
+            const input = document.querySelector('input[id*="ibxSrchDmstCd"]') ||
+                document.querySelector('input[id*="txtPrcrmntInsttNm"]') ||
+                document.querySelector('input[id*="prcrmntInsttNm"]');
+            return input && (input as HTMLElement).offsetParent !== null; // Visible check
         });
 
         if (!isDetailedOpen) {
-            console.log('Detailed search seems closed. Attempting to open...');
+            console.log('Detailed search inputs not visible. Attempting to match and click "상세조건" button...');
 
-            // Try ID-based toggle selector
-            const toggleBtn = await targetFrame.$('[id*="btnSearchToggle"]');
-            if (toggleBtn) {
-                console.log('Found Detailed Search Toggle by ID. Clicking...');
-                await targetFrame.evaluate(el => (el as HTMLElement).click(), toggleBtn);
-                await new Promise(r => setTimeout(r, 1000));
-            } else {
-                console.log('Toggle ID not found. Trying text fallback...');
-                const detailedBtns = await targetFrame.$$('a, button, span, div');
-                for (const btn of detailedBtns) {
-                    const text = await targetFrame.evaluate(el => el.textContent?.trim(), btn);
-                    if (text === '상세조건' || text === '상세조건 열기' || text?.includes('상세조건')) {
-                        await targetFrame.evaluate(el => (el as HTMLElement).click(), btn);
-                        break;
+            // Dump buttons for debug
+            await targetFrame.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('a, button, span.w2trigger, div.btn_area'));
+                console.log('--- DEBUG: Potential Toggle Buttons ---');
+                btns.forEach(b => {
+                    const txt = b.textContent?.trim();
+                    if (txt?.includes('상세') || txt?.includes('조건')) {
+                        console.log(`[${b.tagName}] Text: "${txt}", ID: "${b.id}", Class: "${b.className}"`);
                     }
+                });
+            });
+
+            // Try to click "상세조건"
+            const toggleClicked = await targetFrame.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('a, button, span, label'));
+                const toggle = elements.find(el => {
+                    const t = el.textContent?.trim();
+                    return t === '상세조건' || t === '상세조건 열기' || t === '검색조건 더보기';
+                });
+                if (toggle) {
+                    (toggle as HTMLElement).click();
+                    return true;
                 }
+                // Fallback: ID-based (common in G2B)
+                const btnId = document.querySelector('[id*="btnSearchToggle"]');
+                if (btnId) { (btnId as HTMLElement).click(); return true; }
+
+                return false;
+            });
+
+            if (toggleClicked) {
+                console.log('Clicked "상세조건" toggle.');
+                await new Promise(r => setTimeout(r, 2000)); // Wait for expansion
+            } else {
+                console.warn('Could not find "상세조건" button.');
             }
         } else {
-            console.log('Detailed search appears to be already open.');
+            console.log('Detailed search inputs are already visible.');
         }
 
         // Wait a bit
         await new Promise(r => setTimeout(r, 1000));
 
-        // 4. Find Agency Code Input
+        // 4. Find Agencies (Strict Label Search)
         console.log('Looking for Agency Search trigger...');
 
-        // Strategy: Try specific ID first, then fallback to label
-        const triggerClicked = await targetFrame.evaluate(() => {
-            // Known ID from research: mf_wfm_container_btnSrchPrcrmntInstt
-            // We look for any element containing 'btnSrchPrcrmntInstt' in ID
-            const bs = document.querySelectorAll('*');
-            let btn = null;
-            for (const b of bs) {
-                if (b.id && (b.id.includes('btnSrchPrcrmntInstt') || b.id.includes('btnSrchDemand'))) {
-                    btn = b;
-                    break;
-                }
-            }
+        // Define context variables for Agency Search
+        let context = targetFrame;
+        let popupFrame: any = null;
+        let inputHandle: any = null;
+        let triggerHandle: any = null;
 
-            if (btn instanceof HTMLElement) {
-                btn.click();
-                return true;
-            }
+        // B. Search for the "Agency" label to locate the search area
+        console.log('Searching for "Agency" label via Puppeteer Handle (Excluding GNB)...');
+        const labelHandle = await targetFrame.evaluateHandle(() => {
+            // 1. Strict: Table Header in the main content
+            const labels = Array.from(document.querySelectorAll('label, th, td, span, b, strong'));
+            const found = labels.find(el => {
+                const t = el.textContent?.trim();
+                // Exclude Global Nav Bar elements
+                if (el.closest('.gnb') || el.closest('#header') || el.closest('.top_menu')) return false;
 
-            return false;
+                return t === '수요기관' || t === '발주기관';
+            });
+            return found || null;
         });
 
-        if (!triggerClicked) {
-            console.log('ID-based trigger not found. Trying label-based...');
-            // Fallback: Label search (Redundant but safe)
-            const nearbyTriggerClicked = await targetFrame.evaluate(() => {
-                const labels = Array.from(document.querySelectorAll('label, th, td'));
-                const targetLabel = labels.find(l => l.textContent?.includes('수요기관'));
-                if (targetLabel) {
-                    const container = targetLabel.closest('tr') || targetLabel.parentElement?.parentElement;
-                    if (container) {
-                        const genericBtn = container.querySelector('button, a[class*="btn"], input[type="image"]');
-                        if (genericBtn instanceof HTMLElement) {
-                            genericBtn.click();
-                            return true;
-                        }
-                    }
+        if (labelHandle.asElement()) {
+            console.log('Found "수요기관" label (Strict). Finding nearby inputs...');
+
+            // Refined: Find the specific TD (data cell) associated with this Label (header cell)
+            const dataContainerHandle = await targetFrame.evaluateHandle((el: any) => {
+                const th = el.closest('th'); // Assuming Label is in TH
+                if (th && th.nextElementSibling) {
+                    return th.nextElementSibling; // Return the TD next to it
                 }
-                return false;
-            });
+                const td = el.closest('td');
+                if (td && td.nextElementSibling) {
+                    return td.nextElementSibling;
+                }
+                // Fallback: parent parent (usually div wrapping label -> div wrapping field)
+                return el.parentElement?.parentElement || el.closest('tr');
+            }, labelHandle);
 
-            if (!nearbyTriggerClicked) {
-                console.warn('Could not find Agency Search trigger button via Fallback.');
-            } else {
-                console.log('Clicked Agency Search trigger via Fallback.');
+            if (dataContainerHandle.asElement()) {
+                inputHandle = await dataContainerHandle.asElement()!.$('input[type="text"]');
+                triggerHandle = await dataContainerHandle.asElement()!.$('button, a, img[alt*="검색"], img[src*="search"], input[type="image"], .w2trigger');
             }
-        } else {
-            console.log('Clicked Agency Search trigger by ID.');
         }
 
-        // Wait for popup frame to appear
-        console.log('Waiting for popup frame...');
-        let popupFrame = null;
+        if (inputHandle) {
+            // Check if input is disabled (Read-Only)
+            const isDisabled = await inputHandle.evaluate((el: any) => el.disabled || el.classList.contains('w2input_disabled') || el.readOnly);
 
-        // We poll for the frame because it is created dynamically
-        for (let i = 0; i < 10; i++) { // 10 attempts
-            await new Promise(r => setTimeout(r, 1000));
-            const frames = page.frames();
-            for (const f of frames) {
-                // Check for the specific input ID in the frame
-                try {
-                    const hasInput = await f.$('[id*="ibxSrchDmstCd"]');
-                    if (hasInput) {
-                        popupFrame = f;
-                        break;
-                    }
-                } catch (e) { }
+            if (isDisabled) {
+                console.log('Agency Input is DISABLED/Read-Only. Switching to Trigger Button...');
+                inputHandle = null; // Force fall-through to triggerHandle
+            } else {
+                console.log('Found Agency Input box directly. Typing...');
+                // Debug: specific input found
+                const html = await inputHandle.evaluate((el: any) => el.outerHTML);
+                console.log('DEBUG: Input HTML:', html);
+
+                await inputHandle.evaluate((el: any) => el.value = '');
+                await inputHandle.type(TARGET_AGENCY_CODE);
+                await inputHandle.press('Enter');
             }
+        }
+
+        // Note: checking inputHandle again because it might have been set to null above
+        if (!inputHandle && triggerHandle) {
+            console.log('Found Agency Search Trigger.');
+
+            // Debug: check what we found
+            try {
+                const tagDebug = await triggerHandle.evaluate((el: any) => `${el.tagName} | ${el.className} | ${el.id}`);
+                console.log(`Trigger Element: ${tagDebug}`);
+            } catch (e) { }
+
+            console.log('Clicking trigger via JS...');
+            await triggerHandle.evaluate((el: any) => el.click()); // Force click via JS
+
+            // Wait for popup
+            console.log('Waiting for popup...');
+            await new Promise(r => setTimeout(r, 2000));
+
+            // Check if a new frame appeared
+            for (const f of page.frames()) {
+                const name = f.name();
+                // Check if frame looks like a popup (often has 'popup' in name or url, or is new)
+                if (name && (name.includes('popup') || name.includes('frame'))) {
+                    // Check content
+                    try {
+                        if (await f.$('input[id*="ibxSrchDmstCd"]')) {
+                            popupFrame = f;
+                            console.log(`Popup frame identified: ${name}`);
+                            break;
+                        }
+                    } catch (e) { }
+                }
+            }
+
             if (popupFrame) {
-                console.log('Found popup frame!');
-                break;
-            }
-        }
-
-        // If still not found, check if it's in the targetFrame itself (layer popup without iframe)
-        const context = popupFrame || targetFrame;
-
-        const codeInput = await context.$('input[id*="ibxSrchDmstCd"]');
-        if (codeInput) {
-            console.log('Found Agency Code Input. Typing...');
-            await codeInput.type(TARGET_AGENCY_CODE);
-            await codeInput.press('Enter');
-            await new Promise(r => setTimeout(r, 1500));
-
-            // Search button in popup (optional, Enter usually works)
-            const popupSearchBtn = await context.$('[id*="btnS0001"], [id*="btnSearch"]');
-            if (popupSearchBtn) {
-                // Optional click to be sure
-                // await popupSearchBtn.click();
-            }
-
-            await new Promise(r => setTimeout(r, 1500));
-
-            // Select first result
-            // The results are usually in a grid/table
-            // Selector: .gridBody a
-            const firstResult = await context.$('.gridBody a, .gridBody span[class*="click"]');
-            if (firstResult) {
-                console.log('Selecting agency from list...');
-                await firstResult.click();
-            } else {
-                console.warn('No result link found in popup. Checking for any clickable cell...');
-                // Try clicking grid row
-                await context.evaluate(() => {
-                    const cell = document.querySelector('.gridBody td, .w2grid_body_table td');
-                    if (cell instanceof HTMLElement) cell.click();
-                });
+                context = popupFrame;
+                console.log('Switched context to popup frame.');
             }
         } else {
-            console.warn('Could not interact with agency search popup. Input not found.');
+            console.warn('Could not find Agency Input or Trigger near "수요기관" label.');
         }
 
-        // Wait for popup to close / context update
-        await new Promise(r => setTimeout(r, 1500));
+        // 4b. If we clicked trigger or if we are in popup context, we might need to type there
+        if (!inputHandle && (triggerHandle || popupFrame)) {
+            const popupInput = await context.$('input[id*="ibxSrchDmstCd"], input[id*="txtPrcrmntInsttNm"]');
+            if (popupInput) {
+                console.log('Found Popup Input. Typing...');
+                await popupInput.evaluate((el: any) => el.value = '');
+                await popupInput.click({ clickCount: 3 });
+                await popupInput.type(TARGET_AGENCY_CODE);
+                await popupInput.press('Enter');
+
+                await new Promise(r => setTimeout(r, 1500));
+
+                // Click first result
+                // Try multiple selectors for the result row/link
+                const firstResult = await context.$('tr.gridBodyRow a, .gridBody a, .gridBody span[class*="click"], td a');
+                if (firstResult) {
+                    console.log('Clicking first result in popup via JS...');
+                    await firstResult.evaluate((el: any) => el.click());
+                } else {
+                    console.warn('No clickable result found in popup.');
+                }
+            } else {
+            }
+        }
+
+        // 4c. Set Date Range (to ensure results)
+        console.log('Setting Date Range to last 6 months...');
+        try {
+            const today = new Date();
+            const lastMonth = new Date();
+            lastMonth.setMonth(today.getMonth() - 6);
+
+            const formatDate = (d: Date) => {
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                return `${year}/${month}/${day}`;
+            };
+
+            const startDate = formatDate(lastMonth);
+            // const endDate = formatDate(today); // Usually defaults to today, no need to touch
+
+            // Find Start Date Input (IDs often contain 'from', 'From', 'Beg', or 'Start')
+            // Find Start Date Input (IDs often contain 'from', 'From', 'Beg', or 'Start')
+            // G2B Bid Info: 'fromBidDt'
+            // G2B Order List: 'inqrBgnDt'
+            const dateInput = await targetFrame.$('input[id*="fromBidDt"], input[name*="fromBidDt"], input[id*="inqrBgnDt"], input[id*="from"], input[id*="From"], input[id*="Start"], input[id*="Beg"]');
+
+            if (dateInput) {
+                const id = await dateInput.evaluate((el: any) => el.id);
+                console.log(`Found Date Input [ID: ${id}]. Setting to ${startDate}`);
+
+                await dateInput.evaluate((el: any) => el.value = '');
+                await dateInput.type(startDate);
+                await dateInput.press('Tab'); // Trigger events
+            } else {
+                console.warn('Could not find Date Start input automatically.');
+            }
+        } catch (e) {
+            console.error('Error setting date range:', e);
+        }
 
         // 5. Click Main Search in targetFrame
         console.log('Clicking Main Search...');
-        const searchBtns = await targetFrame.$$('a, button, input[type="submit"]');
+        const searchBtns = await targetFrame.$$('a, button, input[type="submit"], .btn_search, .w2trigger');
         let mainSearchClicked = false;
+
         for (const btn of searchBtns) {
-            // Check ID first: mf_wfm_container_btnS0001
-            const id = await targetFrame.evaluate(el => el.id, btn);
-            if (id && (id.includes('btnS0001') || id.includes('btnSearch'))) {
-                await targetFrame.evaluate(el => el.click(), btn);
+            const id = await targetFrame.evaluate((el: any) => el.id, btn);
+            const text = await targetFrame.evaluate((el: any) => el.textContent?.trim() || el.value || el.getAttribute('alt'), btn);
+            const className = await targetFrame.evaluate((el: any) => el.className, btn);
+
+            // Debug matching
+            // console.log(`Check Btn: ID=${id}, Text=${text}, Class=${className}`);
+
+            if (
+                (id && (id.includes('btnS0001') || id.includes('btnSearch') || id.includes('S0001'))) ||
+                (text === '검색' || text === '조회') ||
+                (typeof className === 'string' && (className.includes('btn_search') || className.includes('search')))
+            ) {
+                // EXCLUDE GNB/Global buttons
+                if (id && (id.includes('gnb') || id.includes('global') || id.includes('header') || id.includes('Global'))) {
+                    console.log(`Skipping GNB Button: ${id}`);
+                    continue;
+                }
+                if (typeof className === 'string' && (className.includes('gnb') || className.includes('top'))) {
+                    continue;
+                }
+                if (text && text.includes('해당 검색어')) {
+                    continue;
+                }
+
+                console.log(`Clicking Search Button: [ID: ${id}] [Text: ${text}]`);
+                await targetFrame.evaluate((el: any) => el.click(), btn);
                 mainSearchClicked = true;
-                console.log('Clicked Main Search by ID.');
                 break;
             }
         }
 
         if (!mainSearchClicked) {
-            // Fallback by text
-            for (const btn of searchBtns) {
-                const text = await targetFrame.evaluate(el => el.textContent?.trim() || (el as HTMLInputElement).value, btn);
-                if (text === '검색' || text === '조회') {
-                    await targetFrame.evaluate(el => el.click(), btn);
-                    break;
-                }
+            console.warn('Could not identify a Main Search button.');
+            // Fallback: Try clicking the first button in the .btn_area if it exists
+            const btnArea = await targetFrame.$('.btn_area .btn_search, .btn_area a.btn_blue');
+            if (btnArea) {
+                console.log('Fallback: Clicking first button in .btn_area');
+                await btnArea.evaluate((el: any) => el.click());
+                mainSearchClicked = true;
             }
         }
 
-        await new Promise(r => setTimeout(r, 3000));
+        console.log('Waiting for results (5s)...');
+        await new Promise(r => setTimeout(r, 5000));
 
+        // CAPTURE SCREENSHOT
+        console.log('Capturing debug screenshot...');
+        try {
+            await page.screenshot({ path: 'debug_search_result.png', fullPage: true });
+            console.log('Saved debug_search_result.png');
+        } catch (e) {
+            console.error('Failed to capture screenshot:', e);
+        }
 
         // 6. Extract Results from targetFrame
         console.log('Extracting results...');
         const announcements: Announcement[] = await targetFrame.evaluate(() => {
+            // Check for No Data message
+            if (document.body.innerText.includes('데이터가 존재하지') || document.body.innerText.includes('조회된 데이터가 없습니다')) {
+                console.log('DEBUG: Page says "No Data Found"');
+            }
+
             const rows = Array.from(document.querySelectorAll('table tbody tr'));
+            console.log(`DEBUG: Found ${rows.length} table rows.`); // Client-side log
+
             const results: Announcement[] = [];
 
-            rows.forEach(row => {
+            rows.forEach((row, idx) => {
                 const cols = row.querySelectorAll('td');
                 if (cols.length < 5) return;
 
                 const titleEl = row.querySelector('div.tl a') || row.querySelector('td.tl a') || row.querySelector('a');
-                if (!titleEl) return;
+                if (!titleEl) {
+                    if (idx < 3) console.log(`DEBUG: Row ${idx} has no proper title link.`);
+                    return;
+                }
 
                 const title = titleEl.textContent?.trim() || '';
                 let link = (titleEl as HTMLAnchorElement).href;
