@@ -3,30 +3,31 @@ import { supabase } from '@/lib/supabase';
 // Force dynamic rendering to fetch fresh data on every request
 export const dynamic = 'force-dynamic';
 
-interface Announcement {
-  id: string;
+interface Bid {
+  bid_no: string;
   title: string;
-  link: string;
+  url: string;
   date: string;
   agency: string;
-  status: string;
-  is_sent: boolean;
+  type: string;
   created_at: string;
+  // end_date, etc. if needed
 }
 
 export default async function Home() {
   const { data } = await supabase
-    .from('announcements')
+    .from('g2b_bids')
     .select('*')
     .order('date', { ascending: false })
-    .order('created_at', { ascending: false })
     .limit(100);
 
-  const announcements = (data as Announcement[]) || [];
+  const bids = (data as Bid[]) || [];
 
   // Calculate stats
-  const today = new Date().toISOString().split('T')[0].replace(/-/g, '/');
-  const newTodayCount = announcements.filter(a => a.date >= today).length;
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '-'); // Format YYYY-MM-DD
+  // Check format of bid.date (it is timestamp or text? In scrape/api it was YYYY-MM-DD HH:MM:SS)
+  // We'll compare loose string match or date object.
+  const newTodayCount = bids.filter(a => a.date && a.date.startsWith(today)).length;
 
   return (
     <main className="min-h-screen bg-gray-50 p-8">
@@ -39,7 +40,7 @@ export default async function Home() {
           <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 flex gap-6">
             <div className="text-center">
               <p className="text-sm text-gray-500">총 수집</p>
-              <p className="text-2xl font-bold text-blue-600">{announcements.length}</p>
+              <p className="text-2xl font-bold text-blue-600">{bids.length}</p>
             </div>
             <div className="text-center border-l pl-6">
               <p className="text-sm text-gray-500">오늘 공고</p>
@@ -56,39 +57,41 @@ export default async function Home() {
                   <th className="px-6 py-4">진행일자</th>
                   <th className="px-6 py-4">공고명</th>
                   <th className="px-6 py-4">수요기관</th>
-                  <th className="px-6 py-4">상태</th>
+                  <th className="px-6 py-4">구분</th>
                   <th className="px-6 py-4">링크</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {announcements.length === 0 ? (
+                {bids.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-6 py-12 text-center text-gray-400">
-                      수집된 데이터가 없습니다.
+                      수집된 데이터가 없습니다. (테이블: g2b_bids)
                     </td>
                   </tr>
                 ) : (
-                  announcements.map((item) => (
-                    <tr key={item.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 font-mono text-gray-900">{item.date}</td>
+                  bids.map((item) => (
+                    <tr key={item.bid_no} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 font-mono text-gray-900">
+                        {item.date ? new Date(item.date).toLocaleString('ko-KR') : '-'}
+                      </td>
                       <td className="px-6 py-4">
                         <div className="font-medium text-gray-900">{item.title}</div>
-                        <div className="text-xs text-gray-400 mt-1">{item.id}</div>
+                        <div className="text-xs text-gray-400 mt-1">{item.bid_no}</div>
                       </td>
                       <td className="px-6 py-4">{item.agency}</td>
                       <td className="px-6 py-4">
                         <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.is_sent
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.type === 'service'
                               ? 'bg-blue-100 text-blue-800'
-                              : 'bg-yellow-100 text-yellow-800'
+                              : 'bg-green-100 text-green-800'
                             }`}
                         >
-                          {item.is_sent ? '알림전송됨' : '미전송'}
+                          {item.type === 'service' ? '용역' : '물품'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <a
-                          href={item.link}
+                          href={item.url}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-blue-600 hover:text-blue-800 hover:underline"

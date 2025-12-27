@@ -8,10 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "scrape:local": "tsx scripts/scrape.ts",
-    "debug:html": "tsx scripts/debug_html.ts"
+    "debug:html": "tsx scripts/debug_html.ts",
+    "history": "tsx scripts/fetch_history.ts",
+    "api": "tsx scripts/run_api.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
+    "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "next": "16.1.1",
     "nodemailer": "^7.0.12",

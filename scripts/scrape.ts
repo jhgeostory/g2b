@@ -88,66 +88,87 @@ async function scrapeG2B(): Promise<Announcement[]> {
 
         // Find "입찰정보" (Bid Info) menu item
         const frames = page.frames();
-        for (const frame of frames) {
-            const menuHandle = await frame.evaluateHandle(() => {
-                const result = Array.from(document.querySelectorAll('a, button, span, li'));
-                return result.find(el => el.textContent?.trim() === '입찰정보');
+        // 2. Use Main Page Unified Search (Bypass Menu)
+        console.log('Attempting Main Page Search (Bypassing Menu Navigation)...');
+
+        // Ensure "Bid Announcement" mode is selected (Radio button)
+        const modeRadio = await page.waitForSelector('input[type="radio"][title="입찰공고"]', { timeout: 2000 }).catch(() => null);
+        if (modeRadio) {
+            console.log('Ensuring "Bid Announcement" mode is selected...');
+            await modeRadio.evaluate((el: any) => el.click());
+            await new Promise(r => setTimeout(r, 500));
+        }
+
+        const mainSearchInput = await page.waitForSelector('input[title="검색어 입력"], input[placeholder="입찰공고"]', { timeout: 5000 }).catch(() => null);
+
+        if (mainSearchInput) {
+            console.log('Found Main Page Search Input. Typing Agency Code directly...');
+
+            // Handle Alerts (e.g., "Enter search term")
+            page.on('dialog', async dialog => {
+                console.log(`DIALOG DETECTED: [${dialog.type()}] ${dialog.message()}`);
+                await dialog.accept();
             });
 
-            if (menuHandle.asElement()) {
-                console.log('Found "입찰정보" menu. Clicking...');
-                await menuHandle.asElement()!.evaluate((el: any) => el.click());
-                menuClicked = true;
-                await new Promise(r => setTimeout(r, 2000)); // Wait for submenu/frame load
-                break;
+            // Force focus/click
+            await mainSearchInput.evaluate((el: any) => { el.focus(); el.click(); el.value = ''; });
+            await new Promise(r => setTimeout(r, 200));
+            await mainSearchInput.type(TARGET_AGENCY_CODE, { delay: 100 });
+            await new Promise(r => setTimeout(r, 500));
+
+            // Find the search button (magnifying glass) - Traverse up to find sibling button
+            const searchBtn = await page.evaluateHandle((input: any) => {
+                let container = input.parentElement;
+                let btn = null;
+                // Traverse up 4 levels to be safe
+                for (let i = 0; i < 4; i++) {
+                    if (!container) break;
+                    btn = container.querySelector('.srch_sm') || container.querySelector('.btn_search') || container.querySelector('input[type="button"].srch_sm');
+                    if (btn) break;
+                    container = container.parentElement;
+                }
+                return btn;
+            }, mainSearchInput);
+
+            const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target(), { timeout: 10000 }).catch(() => null);
+
+            if (searchBtn.asElement()) {
+                console.log('Found Search Button. Clicking...');
+                await searchBtn.asElement()!.evaluate((el: any) => el.click());
+            } else {
+                console.log('Search Button not found. Trying Enter key...');
+                await page.keyboard.press('Enter');
             }
-        }
 
-        if (!menuClicked) {
-            console.warn('Could not find "입찰정보" menu. Proceeding anyway...');
-        }
-
-        // Find "공고현황" (Announcement List) sub-menu
-        let subMenuClicked = false;
-        for (const frame of page.frames()) {
-            const subMenuHandle = await frame.evaluateHandle(() => {
-                const result = Array.from(document.querySelectorAll('a, button, span, li'));
-                // "공고현황" or "입찰공고검색"
-                return result.find(el => {
-                    const t = el.textContent?.trim();
-                    return t === '공고현황' || t === '물품'; // Clicking "물품" often leads to the list
-                });
-            });
-
-            if (subMenuHandle.asElement()) {
-                console.log('Found "공고현황/물품" button. Clicking via JS...');
-
-                await new Promise(r => setTimeout(r, 500));
-
-                // For Bid Info, it usually stays in the same tab (iframe update), 
-                // BUT sometimes opens a popup. We'll use the generic wait logic.
-                const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target(), { timeout: 5000 }).catch(() => null);
-
-                await subMenuHandle.asElement()!.evaluate((el: any) => el.click());
-
-                const newTarget = await newTargetPromise;
-                if (newTarget) {
-                    console.log('New tab/window opened. Switching context...');
-                    const newPage = await newTarget.page();
-                    if (newPage) {
-                        page = newPage;
+            // Wait specifically for potential navigation or new tab
+            const newTarget = await newTargetPromise;
+            if (newTarget) {
+                console.log('New tab/popup detected from Search! Switching context...');
+                const newPage = await newTarget.page();
+                if (newPage) {
+                    page = newPage;
+                    await page.bringToFront();
+                }
+            } else {
+                // Check if a new page exists anyway (waitForTarget might have timed out or missed)
+                const pages = await browser.pages();
+                if (pages.length > 1) {
+                    console.log(`Found ${pages.length} pages. Switching to the last one...`);
+                    const lastPage = pages[pages.length - 1];
+                    if (lastPage !== page) {
+                        page = lastPage;
                         await page.bringToFront();
                     }
                 }
-
-                subMenuClicked = true;
-                break;
             }
+
+            console.log('Search action completed. Waiting for results (10s)...');
+            await new Promise(r => setTimeout(r, 10000));
+        } else {
+            console.error('ERROR: Could not find Main Page Search Input.');
         }
 
-        if (!subMenuClicked) {
-            console.warn('Could not find "공고현황" menu button.');
-        }
+        // (Menu navigation logic removed in favor of Main Page Search)
 
         console.log('Waiting for page load (3s)...');
         await new Promise(r => setTimeout(r, 3000));
@@ -159,41 +180,29 @@ async function scrapeG2B(): Promise<Announcement[]> {
         // Fix: Do not rely on text '발주목록' as it exists in the menu on every page.
         // Check for specific Inputs meant for the Order List form.
         let onOrderListPage = false;
-        try {
-            onOrderListPage = await page.evaluate(() => {
-                // Check for 'inqrBgnDt' (Date Input) or 'taskClCd' (Hidden Task Code)
+
+        // Check all frames for the Search Form
+        let targetFrame: any = page.mainFrame();
+
+        for (const frame of page.frames()) {
+            const hasInput = await frame.evaluate(() => {
                 return !!document.querySelector('input[id*="inqrBgnDt"]') ||
                     !!document.querySelector('input[name="taskClCd"]') ||
                     !!document.querySelector('input[id*="dminInstCd"]');
-            });
-        } catch (e) { }
+            }).catch(() => false);
 
-        if (pageTitle === '나라장터' && !onOrderListPage) {
-            console.error('ERROR: Still on Main Page (Title: 나라장터) and Search Form inputs NOT found.');
-            console.log('Menu navigation failed. Attempting Direct URL for "Bid Announcement Search"...');
-
-            // Fallback: Direct URL to the internal "Bid Announcement" application page
-            // This bypasses the frameset wrapper which often blocks direct access.
-            const DIRECT_URL = 'https://www.g2b.go.kr:8101/ep/tbid/tbidFwd.do?taskClCd=1';
-            await page.goto(DIRECT_URL, { waitUntil: 'networkidle0' });
-            await new Promise(r => setTimeout(r, 4000));
-
-            console.log(`Navigated to Direct URL: ${page.url()}`);
-
-            // Re-verify
-            try {
-                onOrderListPage = await page.evaluate(() => {
-                    return !!document.querySelector('input[id*="inqrBgnDt"]') ||
-                        !!document.querySelector('input[name="taskClCd"]') ||
-                        !!document.querySelector('input[id*="dminInstCd"]');
-                });
-            } catch (e) { }
-
-            if (!onOrderListPage) {
-                const uniqueText = await page.evaluate(() => document.body.innerText.substring(0, 200));
-                console.log(`Page Stub after Direct URL: ${uniqueText}`);
-                throw new Error('Navigation failed: Direct URL also failed to load Search Inputs.');
+            if (hasInput) {
+                onOrderListPage = true;
+                targetFrame = frame;
+                console.log(`Found Order List inputs in frame: ${frame.name() || 'Main'}`);
+                break;
             }
+        }
+
+        if (!onOrderListPage) {
+            console.error('ERROR: Search Form inputs NOT found in any frame after Main Page Search.');
+            console.log('--- DEBUG: Frame Dump ---');
+            page.frames().forEach(f => console.log(`Frame: [${f.name()}] URL: ${f.url()}`));
         }
 
         if (onOrderListPage) {
@@ -207,32 +216,7 @@ async function scrapeG2B(): Promise<Announcement[]> {
         // Close Popups on New Page if any
         await closeMainPopups(page);
 
-        // 3. Identify Content Frame
-        console.log('Searching for content frame containing "공고명"...');
-
-        let targetFrame = null;
-        for (let i = 0; i < 10; i++) {
-            const frames = page.frames();
-            for (const f of frames) {
-                try {
-                    const text = await f.evaluate(() => document.body.innerText).catch(() => '');
-                    // Stricter frame check
-                    if (text.includes('공고명') && (text.includes('수요기관') || text.includes('발주기관'))) {
-                        targetFrame = f;
-                        console.log(`Found Content Frame: ${f.name() || 'Unnamed'} (${f.url()})`);
-                        break;
-                    }
-                } catch (e) { }
-            }
-            if (targetFrame) break;
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        if (!targetFrame) {
-            // Fallback to main page if frames not found (sometimes it's not framed)
-            console.log('No specific content frame found. Using Main Page as target.');
-            targetFrame = page;
-        }
+        // Content Frame already identified during verification.
 
         // 3b. Dump Search Area HTML for Debugging
         console.log('--- DEBUG: Dumping "수요기관" Search Area HTML ---');
