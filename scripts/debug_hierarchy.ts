@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer';
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-popup-blocking'],
     });
     const page = await browser.newPage();
@@ -28,7 +28,7 @@ import puppeteer from 'puppeteer';
         if (!target) return 'Text "입찰정보" not found in discrete element.';
 
         const chain = [];
-        let curr = target;
+        let curr: any = target;
         for (let i = 0; i < 7; i++) {
             if (!curr) break;
             chain.push({
@@ -60,7 +60,7 @@ import puppeteer from 'puppeteer';
         if (!target) return 'Text "공고현황" or "물품" not found.';
 
         const chain = [];
-        let curr = target;
+        let curr: any = target;
         for (let i = 0; i < 7; i++) {
             if (!curr) break;
             chain.push({

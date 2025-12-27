@@ -66,7 +66,7 @@ async function closeMainPopups(page: any) {
 async function scrapeG2B(): Promise<Announcement[]> {
     console.log('Starting scraper...');
     const browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-popup-blocking'], // Added popup blocking disable
     });
     let page = await browser.newPage();

@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer';
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
@@ -21,8 +21,8 @@ import puppeteer from 'puppeteer';
         const container = target.closest('div.w2group') || target.parentElement?.parentElement;
         if (!container) return 'Container not found';
 
-        const input = container.querySelector('input[type="text"]');
-        const btn = container.querySelector('button, a, img[alt*="검색"]');
+        const input: any = container.querySelector('input[type="text"]');
+        const btn: any = container.querySelector('button, a, img[alt*="검색"]');
 
         return {
             label: target.textContent,

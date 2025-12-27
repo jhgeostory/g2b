@@ -4,7 +4,7 @@ import fs from 'fs';
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
@@ -23,11 +23,11 @@ import fs from 'fs';
     const inputInfo = await page.evaluate(() => {
         const inputs = Array.from(document.querySelectorAll('input, textarea'));
         return inputs
-            .filter(el => {
+            .filter((el: any) => {
                 const style = window.getComputedStyle(el);
                 return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
             })
-            .map(el => ({
+            .map((el: any) => ({
                 tag: el.tagName,
                 id: el.id,
                 name: el.name,

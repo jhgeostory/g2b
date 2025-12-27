@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer';
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: 'new',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     const page = await browser.newPage();
@@ -11,7 +11,7 @@ import puppeteer from 'puppeteer';
 
     console.log('--- Inputs on Main Page ---');
     const inputs = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('input')).map(el => ({
+        return Array.from(document.querySelectorAll('input')).map((el: any) => ({
             id: el.id,
             name: el.name,
             placeholder: el.placeholder,
@@ -24,7 +24,7 @@ import puppeteer from 'puppeteer';
 
     console.log('--- Buttons on Main Page ---');
     const buttons = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('button, a.btn_search, span.btn_search, img[alt*="검색"]')).map(el => ({
+        return Array.from(document.querySelectorAll('button, a.btn_search, span.btn_search, img[alt*="검색"]')).map((el: any) => ({
             tagName: el.tagName,
             id: el.id,
             textContent: el.textContent?.trim(),
