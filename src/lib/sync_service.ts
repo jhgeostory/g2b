@@ -4,11 +4,15 @@ import { supabase } from '@/lib/supabase';
 import { sendDiscordAlert } from './notify_discord';
 
 // Helper to filter by agency
-const TARGET_AGENCY_CODE = '1613436';
+const TARGET_AGENCIES = [
+    '1613436', // 국토지리정보원
+    '1192136', // 국립해양조사원
+    '1400000'  // 산림청
+];
 
 async function processBids(bids: BidItem[]) {
     // Filter
-    const filtered = bids.filter(b => b.dminsttCd === TARGET_AGENCY_CODE);
+    const filtered = bids.filter(b => TARGET_AGENCIES.includes(b.dminsttCd));
 
     if (filtered.length === 0) return 0;
 

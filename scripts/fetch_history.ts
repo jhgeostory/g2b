@@ -2,7 +2,11 @@
 import { fetchBids } from './api_client';
 import { supabase } from '../src/lib/supabase';
 
-const TARGET_AGENCY_CODE = '1613436';
+const TARGET_AGENCIES = [
+    '1613436', // 국토지리정보원
+    '1192136', // 국립해양조사원
+    '1400000'  // 산림청
+];
 
 // Helper: Format Date YYYYMMDDHHMM
 function toApiDate(d: Date, time: string): string {
@@ -56,7 +60,7 @@ async function processDay(date: Date) {
             const { items, totalCount } = await fetchBids(type, sStr, eStr, page, rows);
 
             // Filter
-            const matches = items.filter((item: any) => item.dminsttCd === TARGET_AGENCY_CODE);
+            const matches = items.filter((item: any) => TARGET_AGENCIES.includes(item.dminsttCd));
 
             // Save
             if (matches.length > 0) {

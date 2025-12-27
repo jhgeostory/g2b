@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import SyncButton from '@/app/components/SyncButton';
+import Link from 'next/link';
 
 // Force dynamic rendering to fetch fresh data on every request
 export const dynamic = 'force-dynamic';
@@ -37,8 +38,13 @@ export default async function Home() {
           <div>
             <h1 className="text-3xl font-bold text-gray-900">G2B 발주 모니터링</h1>
             <div className="flex items-center gap-4 mt-2">
-              <p className="text-gray-500">국토교통부 국토지리정보원 (코드: 1613436)</p>
-              <SyncButton />
+              <p className="text-gray-500 text-sm">대상: 국토지리정보원, 국립해양조사원, 산림청</p>
+              <div className="flex gap-2">
+                <Link href="/report" className="px-4 py-2 rounded-lg text-sm font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 transition-colors">
+                  📊 보고서
+                </Link>
+                <SyncButton />
+              </div>
             </div>
           </div>
           <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 flex gap-6">
